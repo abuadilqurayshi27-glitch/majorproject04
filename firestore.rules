@@ -1,0 +1,238 @@
+rules_version = '2';
+
+// ===============================================================
+// Assumed Data Model
+// ===============================================================
+//
+// Collection: profiles
+// Document ID: {userId} (matches Firebase Auth UID)
+// Fields:
+//   - uid: string (matches auth.uid)
+//   - name: string (required/optional, max 100 chars)
+//   - email: string (required/optional, max 150 chars)
+//   - photoURL: string (optional, max 2000 chars)
+//   - age: number (optional, 0 to 150)
+//   - education: string (optional, max 100 chars)
+//   - stream: string (optional, max 100 chars)
+//   - course: string (optional, max 150 chars)
+//   - subjects: list (optional, max 50 items)
+//   - learningGoal: string (optional, max 1000 chars)
+//   - learningLevel: string (optional, max 50 chars)
+//   - classLevel: string (optional, max 50 chars)
+//   - boardExam: string (optional, max 100 chars)
+//   - createdAt: string (optional, max 50 chars)
+//   - updatedAt: string (optional, max 50 chars)
+//
+// Collection: users
+// Document ID: {userId} (matches Firebase Auth UID)
+// Fields:
+//   - isProfileComplete: bool
+//   - updatedAt: string
+//
+// Collection: videos
+// Document ID: {videoId}
+// Fields:
+//   - Public educational videos (readable by anyone, writable by authenticated users)
+//
+// Collection: learningHistory
+// Document ID: {historyId} (typically {userId}_{videoId})
+// Fields:
+//   - userId: string (owner UID)
+//   - videoId: string
+//   - videoTitle: string
+//   - durationSeconds: number
+//   - watchPercentage: number
+//   - isCompleted: bool
+//   - watchedAt: string
+//
+// Collection: learningProgress
+// Document ID: {docId} (typically {userId}_{date})
+// Fields:
+//   - userId: string (owner UID)
+//   - date: string
+//   - seconds: number
+//   - minutes: number
+//   - updatedAt: string
+//
+// Collection: smartNotes, flashcards, videoFlashcards, videoQuizzes,
+//             topics, smartNotesCorrections
+// Document ID: {docId}
+// Fields:
+//   - Educational content and study artifacts (readable and writable by authenticated users)
+//
+// Collection: quizResults, tutorConversations, revisions, revisionNotifications
+// Document ID: {docId}
+// Fields:
+//   - userId: string (owner UID)
+//   - Private student activity, assessments, and AI tutoring logs (strictly owner-only access)
+//
+// ===============================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default deny: Deny all reads and writes by default across all documents
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    // Check if the request is from an authenticated user
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Check if the authenticated user matches the specified userId
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    // Validate student profile data schema & strictly block forbidden sensitive fields
+    function isValidProfile(data) {
+      return data.keys().hasOnly([
+               'name', 'email', 'photoURL', 'age', 'education',
+               'stream', 'course', 'subjects', 'learningGoal', 'learningLevel',
+               'classLevel', 'boardExam', 'createdAt', 'updatedAt', 'uid'
+             ]) &&
+             !data.keys().hasAny([
+               'password', 'token', 'accessToken', 'googleToken', 'refreshToken', 'isAdmin'
+             ]) &&
+             (!('uid' in data) || (data.uid is string && data.uid == request.auth.uid)) &&
+             (!('name' in data) || (data.name is string && data.name.size() <= 100)) &&
+             (!('email' in data) || (data.email is string && data.email.size() <= 150)) &&
+             (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() <= 2000)) &&
+             (!('age' in data) || (data.age is number && data.age >= 0 && data.age <= 150)) &&
+             (!('education' in data) || (data.education is string && data.education.size() <= 100)) &&
+             (!('stream' in data) || (data.stream is string && data.stream.size() <= 100)) &&
+             (!('course' in data) || (data.course is string && data.course.size() <= 150)) &&
+             (!('subjects' in data) || (data.subjects is list && data.subjects.size() <= 50)) &&
+             (!('learningGoal' in data) || (data.learningGoal is string && data.learningGoal.size() <= 1000)) &&
+             (!('learningLevel' in data) || (data.learningLevel is string && data.learningLevel.size() <= 50)) &&
+             (!('classLevel' in data) || (data.classLevel is string && data.classLevel.size() <= 50)) &&
+             (!('boardExam' in data) || (data.boardExam is string && data.boardExam.size() <= 100)) &&
+             (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() <= 50)) &&
+             (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 50));
+    }
+
+    // ===============================================================
+    // Collection Rules
+    // ===============================================================
+
+    // 1. User Profiles
+    // Each user can only read, create, and update their own profile (request.auth.uid == userId).
+    // Validates allowed profile fields and blocks sensitive credential or privilege fields.
+    match /profiles/{userId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) && isValidProfile(request.resource.data);
+      allow update: if isOwner(userId) && isValidProfile(request.resource.data) &&
+                      (!('uid' in resource.data) || !('uid' in request.resource.data) || request.resource.data.uid == resource.data.uid);
+      allow delete: if isOwner(userId);
+    }
+
+    // 2. User Account Meta
+    // Accessible only by the owner
+    match /users/{userId} {
+      allow read, write: if isOwner(userId);
+    }
+
+    // 3. Videos
+    // Educational video catalog: Readable by anyone (public), writable by authenticated users
+    match /videos/{videoId} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+
+    // 4. Learning History
+    // Read and write only if request.auth.uid == resource.data.userId or request.resource.data.userId == request.auth.uid
+    match /learningHistory/{historyId} {
+      allow read: if isSignedIn() && (resource == null || resource.data.userId == request.auth.uid);
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow update: if isSignedIn() && resource.data.userId == request.auth.uid && request.resource.data.userId == request.auth.uid;
+      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    // 5. Daily Learning Progress
+    // Read and write only if owner matches userId
+    match /learningProgress/{docId} {
+      allow read: if isSignedIn() && (resource == null || resource.data.userId == request.auth.uid);
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow update: if isSignedIn() && resource.data.userId == request.auth.uid && request.resource.data.userId == request.auth.uid;
+      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    // 6. Smart Notes
+    // Readable and writable by authenticated users
+    match /smartNotes/{docId} {
+      allow read, write: if isSignedIn();
+    }
+
+    // 7. Flashcards
+    // Readable and writable by authenticated users
+    match /flashcards/{docId} {
+      allow read, write: if isSignedIn();
+    }
+
+    // 8. Video Flashcard Collections
+    // Readable and writable by authenticated users
+    match /videoFlashcards/{docId} {
+      allow read, write: if isSignedIn();
+    }
+
+    // 9. Video Quizzes
+    // Readable and writable by authenticated users
+    match /videoQuizzes/{docId} {
+      allow read, write: if isSignedIn();
+    }
+
+    // 10. Quiz Results
+    // Read and write only by owner (userId)
+    match /quizResults/{docId} {
+      allow read: if isSignedIn() && (resource == null || resource.data.userId == request.auth.uid);
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow update: if isSignedIn() && resource.data.userId == request.auth.uid && request.resource.data.userId == request.auth.uid;
+      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    // 11. Topics
+    // Readable and writable by authenticated users
+    match /topics/{topicDocId} {
+      allow read, write: if isSignedIn();
+    }
+
+    // 12. Tutor Conversations
+    // Read and write only by owner (userId)
+    match /tutorConversations/{docId} {
+      allow read: if isSignedIn() && (resource == null || resource.data.userId == request.auth.uid);
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow update: if isSignedIn() && resource.data.userId == request.auth.uid && request.resource.data.userId == request.auth.uid;
+      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    // 13. Revisions
+    // Read and write only by owner (userId)
+    match /revisions/{docId} {
+      allow read: if isSignedIn() && (resource == null || resource.data.userId == request.auth.uid);
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow update: if isSignedIn() && resource.data.userId == request.auth.uid && request.resource.data.userId == request.auth.uid;
+      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    // 14. Revision Notifications
+    // Read and write only by owner (userId)
+    match /revisionNotifications/{docId} {
+      allow read: if isSignedIn() && (resource == null || resource.data.userId == request.auth.uid);
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow update: if isSignedIn() && resource.data.userId == request.auth.uid && request.resource.data.userId == request.auth.uid;
+      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    // 15. Smart Notes Human Corrections
+    // Readable and writable by authenticated users
+    match /smartNotesCorrections/{docId} {
+      allow read, write: if isSignedIn();
+    }
+  }
+}
