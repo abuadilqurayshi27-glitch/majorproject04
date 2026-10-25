@@ -2,7 +2,46 @@ import { VideoMetadata, TranscriptSegment } from '../types/video.js';
 import { SmartNotes, Flashcard, QuizQuestion, SmartNotesMode, SmartNotesLength } from '../types/learning.js';
 import { TutorMessage } from '../types/tutor.js';
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+const rawApiBase = (import.meta.env.VITE_API_URL || 'http://localhost:5000').trim();
+const API_BASE = rawApiBase.replace(/\/+$/, '');
+
+/**
+ * Robust fetch wrapper that produces friendly error messages
+ * when the backend API is unreachable or blocked by CORS / mixed-content
+ */
+async function apiRequest<T = any>(endpoint: string, options?: RequestInit): Promise<T> {
+  const url = `${API_BASE}${endpoint.startsWith('/') ? '' : '/'}${endpoint}`;
+  let res: Response;
+
+  try {
+    res = await fetch(url, options);
+  } catch (err: any) {
+    if (err instanceof TypeError || (err?.message && err.message.toLowerCase().includes('fetch'))) {
+      if (API_BASE.includes('localhost')) {
+        throw new Error(
+          'Cannot connect to backend server at localhost:5000. If you are viewing on Vercel, please deploy the backend server (e.g. on Render) and set the VITE_API_URL environment variable in your Vercel Project Settings.'
+        );
+      }
+      throw new Error(
+        `Unable to reach backend server at ${API_BASE}. Please verify your backend is running, awake, and accessible.`
+      );
+    }
+    throw err;
+  }
+
+  let data: any = {};
+  try {
+    data = await res.json();
+  } catch {
+    // Non-JSON response
+  }
+
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `Request failed with status ${res.status}`);
+  }
+
+  return data;
+}
 
 export interface AnalyzeVideoResponse {
   success: boolean;
@@ -24,17 +63,11 @@ export class ApiService {
    * Fetch video metadata
    */
   public static async getVideoInfo(urlOrId: string): Promise<{ success: boolean; video: VideoMetadata; hasTranscript: boolean; error?: string }> {
-    const res = await fetch(`${API_BASE}/api/video/info`, {
+    return apiRequest('/api/video/info', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url: urlOrId }),
     });
-
-    const data = await res.json();
-    if (!res.ok) {
-      throw new Error(data.error || 'Failed to fetch video information');
-    }
-    return data;
   }
 
   /**
@@ -56,17 +89,11 @@ export class ApiService {
     mode?: SmartNotesMode,
     lengthOption?: SmartNotesLength
   ): Promise<AnalyzeVideoResponse> {
-    const res = await fetch(`${API_BASE}/api/video/analyze`, {
+    return apiRequest('/api/video/analyze', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url: urlOrId, targetLanguage, studentProfile, mode, lengthOption }),
     });
-
-    const data = await res.json();
-    if (!res.ok) {
-      throw new Error(data.error || 'Failed to analyze video');
-    }
-    return data;
   }
 
   /**
@@ -88,14 +115,13 @@ export class ApiService {
     mode?: SmartNotesMode,
     lengthOption?: SmartNotesLength
   ): Promise<SmartNotes> {
-    const res = await fetch(`${API_BASE}/api/video/refresh-notes`, {
+    const data = await apiRequest('/api/video/refresh-notes', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url: urlOrId, targetLanguage, studentProfile, mode, lengthOption }),
     });
 
-    const data = await res.json();
-    if (!res.ok || !data.success) {
+    if (!data.success) {
       throw new Error(data.error || 'Failed to refresh Smart Notes');
     }
     return data.smartNotes;
@@ -111,14 +137,13 @@ export class ApiService {
     detectedLanguage?: string;
     detectedLanguageCode?: string;
   }> {
-    const res = await fetch(`${API_BASE}/api/video/identify-topic`, {
+    const data = await apiRequest('/api/video/identify-topic', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url: urlOrId }),
     });
 
-    const data = await res.json();
-    if (!res.ok || !data.success) {
+    if (!data.success) {
       throw new Error(data.error || 'Failed to identify topic');
     }
     return {
@@ -143,17 +168,11 @@ export class ApiService {
     studentProfile?: any;
     weakTopics?: string[];
   }): Promise<{ reply: string; timestamp: string }> {
-    const res = await fetch(`${API_BASE}/api/tutor/chat`, {
+    return apiRequest('/api/tutor/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(params),
     });
-
-    const data = await res.json();
-    if (!res.ok) {
-      throw new Error(data.error || 'Failed to communicate with AI Tutor');
-    }
-    return data;
   }
 
   /**
@@ -165,17 +184,11 @@ export class ApiService {
     notes?: SmartNotes;
     studentName?: string;
   }): Promise<{ reply: string }> {
-    const res = await fetch(`${API_BASE}/api/tutor/voice`, {
+    return apiRequest('/api/tutor/voice', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(params),
     });
-
-    const data = await res.json();
-    if (!res.ok) {
-      throw new Error(data.error || 'Failed to process voice response');
-    }
-    return data;
   }
 
   /**
@@ -192,16 +205,11 @@ export class ApiService {
     classLevel?: string;
     boardExam?: string;
   }): Promise<any[]> {
-    const res = await fetch(`${API_BASE}/api/recommendations`, {
+    const data = await apiRequest('/api/recommendations', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(params),
     });
-
-    const data = await res.json();
-    if (!res.ok) {
-      throw new Error(data.error || 'Failed to fetch recommendations');
-    }
     return data.recommendations || [];
   }
 
@@ -210,8 +218,7 @@ export class ApiService {
    */
   public static async checkStatus(): Promise<{ hasGeminiKey: boolean; hasYouTubeKey: boolean; geminiModel: string }> {
     try {
-      const res = await fetch(`${API_BASE}/api/settings/status`);
-      return await res.json();
+      return await apiRequest('/api/settings/status');
     } catch {
       return { hasGeminiKey: false, hasYouTubeKey: false, geminiModel: 'gemini-1.5-flash' };
     }
@@ -221,12 +228,11 @@ export class ApiService {
    * Update backend Gemini API key
    */
   public static async updateGeminiKey(apiKey: string): Promise<boolean> {
-    const res = await fetch(`${API_BASE}/api/settings/gemini-key`, {
+    const data = await apiRequest('/api/settings/gemini-key', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ apiKey }),
     });
-    const data = await res.json();
     return data.success;
   }
 }
