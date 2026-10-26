@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "StudyMind AI - AI-powered educational platform that converts YouTube educational videos into an interactive learning experience",
   "scripts": {
-    "dev": "concurrently \"npm run dev --prefix server\" \"npm run dev --prefix client\"",
+    "dev": "npx concurrently \"npm run dev --prefix server\" \"npm run dev --prefix client\"",
     "dev:server": "npm run dev --prefix server",
     "dev:client": "npm run dev --prefix client",
     "build": "npm run build --prefix server && npm run build --prefix client",
