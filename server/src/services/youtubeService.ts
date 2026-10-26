@@ -39,6 +39,167 @@ export class YouTubeService {
   }
 
   /**
+   * Parses duration string (ISO 8601 like PT13M45S or colon format MM:SS / HH:MM:SS) into seconds
+   */
+  public static parseDurationToSeconds(durationStr?: string): number {
+    if (!durationStr) return 600;
+    const str = durationStr.trim();
+
+    // Check ISO 8601 format: PT1H2M3S
+    if (str.startsWith('PT')) {
+      const match = str.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+      if (match) {
+        const hrs = parseInt(match[1] || '0', 10);
+        const mins = parseInt(match[2] || '0', 10);
+        const secs = parseInt(match[3] || '0', 10);
+        return hrs * 3600 + mins * 60 + secs;
+      }
+    }
+
+    // Check colon format: HH:MM:SS or MM:SS
+    const parts = str.split(':').map((p) => parseInt(p, 10));
+    if (parts.length === 3 && !parts.some(isNaN)) {
+      return parts[0] * 3600 + parts[1] * 60 + parts[2];
+    }
+    if (parts.length === 2 && !parts.some(isNaN)) {
+      return parts[0] * 60 + parts[1];
+    }
+
+    const numeric = parseInt(str, 10);
+    return isNaN(numeric) ? 600 : numeric;
+  }
+
+  /**
+   * Robust parser for YouTube timedtext XML supporting both Format 3 (<p t="ms" d="ms">)
+   * and classic Format 1/2 (<text start="s" dur="s">)
+   */
+  public static parseTranscriptXml(xml: string): TranscriptSegment[] {
+    const segments: TranscriptSegment[] = [];
+
+    // Format 3: <p t="ms" d="ms">...
+    const pRegex = /<p\s+t="(\d+)"\s+d="(\d+)"[^>]*>([\s\S]*?)<\/p>/g;
+    let match;
+    while ((match = pRegex.exec(xml)) !== null) {
+      const startMs = parseInt(match[1], 10);
+      const durMs = parseInt(match[2], 10);
+      const inner = match[3];
+      const cleanText = inner
+        .replace(/<[^>]*>/g, '')
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&#39;/g, "'")
+        .replace(/&quot;/g, '"')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+      if (cleanText) {
+        segments.push({
+          start: Math.round(startMs / 1000),
+          duration: Math.max(1, Math.round(durMs / 1000)),
+          text: cleanText,
+        });
+      }
+    }
+
+    // Format 1/2: <text start="s" dur="s">...
+    if (segments.length === 0) {
+      const textRegex = /<text\s+start="([\d\.]+)"\s+dur="([\d\.]+)".*?>([\s\S]*?)<\/text>/g;
+      while ((match = textRegex.exec(xml)) !== null) {
+        const startSec = parseFloat(match[1]);
+        const durSec = parseFloat(match[2]);
+        const cleanText = match[3]
+          .replace(/<[^>]*>/g, '')
+          .replace(/&amp;/g, '&')
+          .replace(/&lt;/g, '<')
+          .replace(/&gt;/g, '>')
+          .replace(/&#39;/g, "'")
+          .replace(/&quot;/g, '"')
+          .replace(/\s+/g, ' ')
+          .trim();
+
+        if (cleanText) {
+          segments.push({
+            start: Math.round(startSec),
+            duration: Math.max(1, Math.round(durSec)),
+            text: cleanText,
+          });
+        }
+      }
+    }
+
+    return segments;
+  }
+
+  /**
+   * Resilient fallback: synthesizes structured milestone segments from video description chapters
+   * or video syllabus outline if closed captions are unavailable or restricted on YouTube.
+   */
+  public static synthesizeSegmentsFromMetadata(metadata: VideoMetadata): TranscriptSegment[] {
+    const totalSecs = this.parseDurationToSeconds(metadata.duration) || 600;
+    const desc = metadata.description || '';
+    const segments: TranscriptSegment[] = [];
+
+    // 1. Look for timestamped chapters in description (e.g. "00:00 Intro", "02:15 Variables")
+    const lines = desc.split('\n');
+    const timeRegex = /(?:(\d{1,2}):)?(\d{1,2}):(\d{2})/;
+    const rawChapters: { start: number; text: string }[] = [];
+
+    for (const line of lines) {
+      const match = line.match(timeRegex);
+      if (match) {
+        let secs = 0;
+        if (match[1]) {
+          secs = parseInt(match[1], 10) * 3600 + parseInt(match[2], 10) * 60 + parseInt(match[3], 10);
+        } else {
+          secs = parseInt(match[2], 10) * 60 + parseInt(match[3], 10);
+        }
+        const text = line.replace(timeRegex, '').replace(/^[\s\-–—:|]+/, '').trim();
+        if (text && text.length > 2) {
+          rawChapters.push({ start: secs, text });
+        }
+      }
+    }
+
+    if (rawChapters.length >= 2) {
+      rawChapters.sort((a, b) => a.start - b.start);
+      for (let i = 0; i < rawChapters.length; i++) {
+        const cur = rawChapters[i];
+        const next = rawChapters[i + 1];
+        const duration = next ? Math.max(10, next.start - cur.start) : Math.max(30, totalSecs - cur.start);
+        segments.push({
+          start: cur.start,
+          duration,
+          text: `[Lecture Section: ${cur.text}] Comprehensive instruction on ${cur.text}. Core concepts, practical implementation, and takeaways.`,
+        });
+      }
+      return segments;
+    }
+
+    // 2. Synthesize structured curriculum segments from video title & description
+    const descSnippets = desc
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l.length > 15 && !l.startsWith('http') && !l.includes('subscribe'))
+      .slice(0, 10);
+
+    const stepCount = Math.max(4, Math.min(8, Math.ceil(totalSecs / 120)));
+    const stepDuration = Math.round(totalSecs / stepCount);
+
+    for (let i = 0; i < stepCount; i++) {
+      const start = i * stepDuration;
+      const snippet = descSnippets[i] ? ` - ${descSnippets[i]}` : '';
+      segments.push({
+        start,
+        duration: stepDuration,
+        text: `Lecture Module ${i + 1}: Core teaching segment on "${metadata.title}"${snippet}. Detailed instruction and key concepts.`,
+      });
+    }
+
+    return segments;
+  }
+
+  /**
    * Detects the actual language used in the video/content:
    * English, Hindi, Kannada, Malayalam, Urdu, Tamil, Telugu, Bengali, Marathi, Gujarati, Punjabi, Odia, etc.
    */
@@ -244,27 +405,101 @@ export class YouTubeService {
     isTranslated: boolean;
     error?: string;
   }> {
-    let rawTranscript: any[] | null = null;
+    let rawSegments: TranscriptSegment[] | null = null;
     let trackLangCode: string | undefined;
 
-    // 1. Fetch the authentic default caption track for the video first (which reflects the video's actual spoken audio)
+    // Strategy 1: Direct InnerTube Android API with official mobile headers (Most reliable on cloud/datacenter IPs)
     try {
-      const tr = await YoutubeTranscript.fetchTranscript(videoId);
-      if (tr && tr.length > 0) {
-        rawTranscript = tr;
+      const innerRes = await axios.post(
+        'https://www.youtube.com/youtubei/v1/player?prettyPrint=false',
+        {
+          context: {
+            client: {
+              clientName: 'ANDROID',
+              clientVersion: '20.10.38',
+              hl: 'en',
+              gl: 'IN',
+            },
+          },
+          videoId,
+        },
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            'User-Agent': 'com.google.android.youtube/20.10.38 (Linux; U; Android 14)',
+            'X-YouTube-Client-Name': '3',
+            'X-YouTube-Client-Version': '20.10.38',
+          },
+          timeout: 8000,
+        }
+      );
+
+      const captionTracks = innerRes.data?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+      if (Array.isArray(captionTracks) && captionTracks.length > 0) {
+        // Prefer track matching target language if available, else first track
+        const track = (targetLanguage && captionTracks.find((t: any) => t.languageCode === targetLanguage)) || captionTracks[0];
+        trackLangCode = track.languageCode;
+
+        if (track.baseUrl) {
+          const timedtextRes = await axios.get(track.baseUrl, {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
+              'Accept-Language': 'en-US,en;q=0.9',
+              'Referer': 'https://www.youtube.com/',
+            },
+            timeout: 8000,
+          });
+
+          const parsed = this.parseTranscriptXml(timedtextRes.data);
+          if (parsed.length > 0) {
+            rawSegments = parsed;
+          }
+        }
       }
-    } catch (ytErr: any) {
-      console.warn(`[YouTubeService] Default transcript fetch failed for ${videoId}: ${ytErr?.message || ytErr}`);
+    } catch (innerErr: any) {
+      console.warn(`[YouTubeService] Strategy 1 (InnerTube Android) failed for ${videoId}: ${innerErr?.message || innerErr}`);
     }
 
-    // 2. If default track fetch was empty, search specific language tracks
-    if (!rawTranscript) {
+    // Strategy 2: YoutubeTranscript library fallback
+    if (!rawSegments || rawSegments.length === 0) {
+      try {
+        const tr = await YoutubeTranscript.fetchTranscript(videoId);
+        if (tr && tr.length > 0) {
+          rawSegments = tr.map((item) => ({
+            text: item.text
+              .replace(/&amp;/g, '&')
+              .replace(/&lt;/g, '<')
+              .replace(/&gt;/g, '>')
+              .replace(/&#39;/g, "'")
+              .replace(/&quot;/g, '"')
+              .trim(),
+            start: Math.round(item.offset / 1000),
+            duration: Math.max(1, Math.round(item.duration / 1000)),
+          }));
+        }
+      } catch (ytErr: any) {
+        console.warn(`[YouTubeService] Strategy 2 (Default library) failed for ${videoId}: ${ytErr?.message || ytErr}`);
+      }
+    }
+
+    // Strategy 3: Specific language search
+    if (!rawSegments || rawSegments.length === 0) {
       const candidateLangs = ['hi', 'kn', 'ml', 'ur', 'ta', 'te', 'bn', 'mr', 'gu', 'pa', 'en', 'en-US', 'en-IN'];
       for (const lang of candidateLangs) {
         try {
           const tr = await YoutubeTranscript.fetchTranscript(videoId, { lang });
           if (tr && tr.length > 0) {
-            rawTranscript = tr;
+            rawSegments = tr.map((item) => ({
+              text: item.text
+                .replace(/&amp;/g, '&')
+                .replace(/&lt;/g, '<')
+                .replace(/&gt;/g, '>')
+                .replace(/&#39;/g, "'")
+                .replace(/&quot;/g, '"')
+                .trim(),
+              start: Math.round(item.offset / 1000),
+              duration: Math.max(1, Math.round(item.duration / 1000)),
+            }));
             trackLangCode = lang;
             break;
           }
@@ -274,24 +509,54 @@ export class YouTubeService {
       }
     }
 
-    if (rawTranscript && rawTranscript.length > 0) {
-      const segments: TranscriptSegment[] = rawTranscript.map((item) => ({
-        text: item.text
-          .replace(/&amp;/g, '&')
-          .replace(/&lt;/g, '<')
-          .replace(/&gt;/g, '>')
-          .replace(/&#39;/g, "'")
-          .replace(/&quot;/g, '"')
-          .trim(),
-        start: Math.round(item.offset / 1000),
-        duration: Math.round(item.duration / 1000),
-      }));
+    // Strategy 4: Web page scrape fallback with dual-format XML parser
+    if (!rawSegments || rawSegments.length === 0) {
+      try {
+        const videoPage = await axios.get(`https://www.youtube.com/watch?v=${videoId}`, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9',
+          },
+          timeout: 8000,
+        });
 
-      const fullText = segments.map((s) => s.text).join(' ');
+        const html = videoPage.data as string;
+        const playerResponseMatch = html.match(/ytInitialPlayerResponse\s*=\s*({.+?});/);
+        if (playerResponseMatch && playerResponseMatch[1]) {
+          const playerResponse = JSON.parse(playerResponseMatch[1]);
+          const captionTracks = playerResponse?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+
+          if (captionTracks && captionTracks.length > 0) {
+            const track = captionTracks[0];
+            trackLangCode = track.languageCode;
+
+            if (track && track.baseUrl) {
+              const captionRes = await axios.get(track.baseUrl, {
+                headers: {
+                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
+                  'Referer': 'https://www.youtube.com/',
+                },
+                timeout: 8000,
+              });
+
+              const parsed = this.parseTranscriptXml(captionRes.data as string);
+              if (parsed.length > 0) {
+                rawSegments = parsed;
+              }
+            }
+          }
+        }
+      } catch (scrapeErr: any) {
+        console.warn(`[YouTubeService] Strategy 4 (Scrape fallback) failed for ${videoId}: ${scrapeErr?.message || scrapeErr}`);
+      }
+    }
+
+    if (rawSegments && rawSegments.length > 0) {
+      const fullText = rawSegments.map((s) => s.text).join(' ');
       const detected = this.detectLanguage(fullText, '', trackLangCode);
 
       return {
-        segments,
+        segments: rawSegments,
         fullText,
         hasTranscript: true,
         detectedLanguage: detected.name,
@@ -301,78 +566,7 @@ export class YouTubeService {
       };
     }
 
-    // 3. Fallback direct timedtext XML scraper from video page
-    try {
-      const videoPage = await axios.get(`https://www.youtube.com/watch?v=${videoId}`, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Accept-Language': 'en-US,en;q=0.9',
-        },
-        timeout: 8000,
-      });
-
-      const html = videoPage.data as string;
-      const playerResponseMatch = html.match(/ytInitialPlayerResponse\s*=\s*({.+?});/);
-      if (playerResponseMatch && playerResponseMatch[1]) {
-        const playerResponse = JSON.parse(playerResponseMatch[1]);
-        const captionTracks = playerResponse?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
-
-        if (captionTracks && captionTracks.length > 0) {
-          // Use authentic primary track first
-          const track = captionTracks[0];
-          trackLangCode = track.languageCode;
-
-          if (track && track.baseUrl) {
-            const captionRes = await axios.get(track.baseUrl, { timeout: 6000 });
-            const xml = captionRes.data as string;
-
-            const regex = /<text start="([\d\.]+)" dur="([\d\.]+)".*?>(.*?)<\/text>/g;
-            let match;
-            const segments: TranscriptSegment[] = [];
-
-            while ((match = regex.exec(xml)) !== null) {
-              const start = parseFloat(match[1]);
-              const duration = parseFloat(match[2]);
-              const text = match[3]
-                .replace(/&amp;/g, '&')
-                .replace(/&lt;/g, '<')
-                .replace(/&gt;/g, '>')
-                .replace(/&#39;/g, "'")
-                .replace(/&quot;/g, '"')
-                .replace(/<[^>]*>/g, '')
-                .trim();
-
-              if (text) {
-                segments.push({
-                  start: Math.round(start),
-                  duration: Math.round(duration),
-                  text,
-                });
-              }
-            }
-
-            if (segments.length > 0) {
-              const fullText = segments.map((s) => s.text).join(' ');
-              const detected = this.detectLanguage(fullText, '', track.languageCode);
-
-              return {
-                segments,
-                fullText,
-                hasTranscript: true,
-                detectedLanguage: detected.name,
-                detectedLanguageCode: detected.code,
-                targetLanguage: 'English',
-                isTranslated: false,
-              };
-            }
-          }
-        }
-      }
-    } catch (scrapeErr: any) {
-      console.warn(`[YouTubeService] Scrape fallback failed for ${videoId}: ${scrapeErr?.message || scrapeErr}`);
-    }
-
-    // 4. Truly unavailable
+    // 5. Truly unavailable
     return {
       segments: [],
       fullText: '',
