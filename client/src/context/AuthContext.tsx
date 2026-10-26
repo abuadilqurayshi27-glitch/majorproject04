@@ -196,18 +196,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setUser(userAcc);
       await loadProfile(userAcc.uid, userAcc.email, userAcc.displayName, userAcc.photoURL);
     } else {
-      // Mock Google Login
+      // Mock Google Login when Firebase Auth is not active in environment
       const mockUid = 'google_demo_' + Date.now();
       const mockUser: UserAccount = {
         uid: mockUid,
-        email: 'alex.student@university.edu',
-        displayName: 'Alex Chen',
+        email: '',
+        displayName: 'Student Learner',
         photoURL: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150',
         isProfileComplete: false,
       };
       localStorage.setItem('studymind_local_user', JSON.stringify(mockUser));
       setUser(mockUser);
-      await loadProfile(mockUid, mockUser.email, mockUser.displayName, mockUser.photoURL);
+      await loadProfile(mockUid, '', mockUser.displayName, mockUser.photoURL);
     }
   };
 
@@ -349,6 +349,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const isComplete = isProfileDataComplete(updated);
     const updatedUser: UserAccount = {
       ...currentUser,
+      email: updated.email,
       displayName: updated.name,
       photoURL: updated.photoURL,
       isProfileComplete: isComplete,

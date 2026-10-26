@@ -3,7 +3,7 @@ import { Award, Check, Camera, Upload, X, Loader2, Plus, AlertCircle, BookOpen, 
 import { useAuth } from '../../context/AuthContext.js';
 import { StudyMindLogo } from '../common/StudyMindLogo.js';
 import { uploadProfilePicture } from '../../services/imageUploadService.js';
-import { getMissingProfileFields } from '../../types/auth.js';
+import { getMissingProfileFields, isDummyEmail } from '../../types/auth.js';
 
 interface ProfileSetupModalProps {
   isOpen: boolean;
@@ -15,7 +15,7 @@ const AVATAR_OPTIONS = [
   'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150',
   'https://images.unsplash.com/photo-1570295999919-56ceb5ecca61?w=150',
   'https://images.unsplash.com/photo-1580489944761-15a19d654956?w=150',
-  'https://images.unsplash.com/photo-1628157582853-a796fa650a6a?w=150',
+  'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150',
 ];
 
 // ── Education level configuration ──────────────────────────────────────────
@@ -166,7 +166,14 @@ export const ProfileSetupModal: React.FC<ProfileSetupModalProps> = ({ isOpen, on
   const { user, profile, saveProfile } = useAuth();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const getInitialEmail = () => {
+    if (profile?.email && !isDummyEmail(profile.email)) return profile.email;
+    if (user?.email && !isDummyEmail(user.email)) return user.email;
+    return '';
+  };
+
   const [name, setName] = useState(profile?.name || user?.displayName || '');
+  const [email, setEmail] = useState(getInitialEmail());
   const [age, setAge] = useState<number>(profile?.age || 17);
   const [education, setEducation] = useState(profile?.education || 'PUC');
   const [stream, setStream] = useState(profile?.stream || 'Science');
@@ -204,6 +211,13 @@ export const ProfileSetupModal: React.FC<ProfileSetupModalProps> = ({ isOpen, on
     if (isOpen) {
       if (profile) {
         setName(profile.name || user?.displayName || '');
+        if (profile.email && !isDummyEmail(profile.email)) {
+          setEmail(profile.email);
+        } else if (user?.email && !isDummyEmail(user.email)) {
+          setEmail(user.email);
+        } else {
+          setEmail('');
+        }
         setAge(profile.age || 17);
         setEducation(profile.education || 'PUC');
         setStream(profile.stream || 'Science');
@@ -224,6 +238,11 @@ export const ProfileSetupModal: React.FC<ProfileSetupModalProps> = ({ isOpen, on
         setSaveSuccess(false);
       } else if (user) {
         setName(user.displayName || '');
+        if (user.email && !isDummyEmail(user.email)) {
+          setEmail(user.email);
+        } else {
+          setEmail('');
+        }
         setSelectedAvatar(user.photoURL || AVATAR_OPTIONS[0]);
       }
     }
@@ -348,7 +367,7 @@ export const ProfileSetupModal: React.FC<ProfileSetupModalProps> = ({ isOpen, on
   // Missing fields for completeness check
   const missingFields = getMissingProfileFields({
     name,
-    email: user?.email || profile?.email || '',
+    email: email.trim(),
     age,
     education,
     stream,
@@ -367,7 +386,7 @@ export const ProfileSetupModal: React.FC<ProfileSetupModalProps> = ({ isOpen, on
       const finalBoard = boardExam === 'Other' ? (customBoardInput.trim() || 'State Board') : (boardExam || 'Karnataka State Board');
       await saveProfile({
         name: name.trim() || user?.displayName || 'Student',
-        email: user?.email || profile?.email || 'student@studymind.ai',
+        email: email.trim() || (user?.email && !isDummyEmail(user.email) ? user.email : 'student@studymind.ai'),
         age: Number(age) || 17,
         education: education || 'PUC',
         stream: stream || 'Science',
@@ -397,6 +416,15 @@ export const ProfileSetupModal: React.FC<ProfileSetupModalProps> = ({ isOpen, on
       setFormError('Please enter your full name');
       return;
     }
+    if (!email.trim() || isDummyEmail(email)) {
+      setFormError('Please enter your valid personal or university email address');
+      return;
+    }
+    const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailPattern.test(email.trim())) {
+      setFormError('Please enter a valid email format (e.g. adil@gmail.com)');
+      return;
+    }
     if (!age || isNaN(Number(age)) || Number(age) <= 0) {
       setFormError('Please enter a valid age (e.g. 17)');
       return;
@@ -418,7 +446,7 @@ export const ProfileSetupModal: React.FC<ProfileSetupModalProps> = ({ isOpen, on
     try {
       await saveProfile({
         name: name.trim(),
-        email: user?.email || profile?.email || 'student@studymind.ai',
+        email: email.trim(),
         age: Number(age) || 17,
         education,
         stream: stream || '',
@@ -666,25 +694,29 @@ export const ProfileSetupModal: React.FC<ProfileSetupModalProps> = ({ isOpen, on
             </div>
           </div>
 
-          {/* Account Email (Retrieved from Firebase / Google Auth) */}
+          {/* Account Email */}
           <div>
             <div className="flex items-center justify-between mb-1">
-              <label className="block text-xs font-semibold text-slate-300">Account Email</label>
-              {isGoogleUser ? (
+              <label className="block text-xs font-semibold text-slate-300">
+                Account Email <span className="text-rose-400">*</span>
+              </label>
+              {isGoogleUser && user?.email && !isDummyEmail(user.email) ? (
                 <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-950/80 border border-emerald-800 text-emerald-300 font-semibold inline-flex items-center gap-1">
                   <ShieldCheck className="w-3 h-3" /> Verified Google Account
                 </span>
               ) : (
-                <span className="text-[10px] px-2 py-0.5 rounded-full bg-indigo-950/80 border border-indigo-800 text-indigo-300 font-semibold inline-flex items-center gap-1">
-                  <ShieldCheck className="w-3 h-3" /> Authenticated
+                <span className="text-[10px] text-brand-400">
+                  ✦ Used for login & syllabus updates
                 </span>
               )}
             </div>
             <input
               type="email"
-              readOnly
-              value={user?.email || profile?.email || 'student@studymind.ai'}
-              className="w-full px-3.5 py-2.5 bg-[#0A0A12] border border-surface-border/60 rounded-xl text-xs text-slate-400 cursor-not-allowed select-none"
+              required
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="e.g. adil@gmail.com"
+              className="w-full px-3.5 py-2.5 bg-[#0E0E1B] border border-surface-border rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-brand-500 transition-colors"
             />
           </div>
 

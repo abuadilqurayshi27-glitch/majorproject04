@@ -25,6 +25,19 @@ export interface UserAccount {
 }
 
 /**
+ * Checks whether an email address is a placeholder or demo dummy value
+ */
+export function isDummyEmail(email?: string): boolean {
+  if (!email || !email.trim()) return true;
+  const lower = email.toLowerCase().trim();
+  return (
+    lower === 'alex.student@university.edu' ||
+    lower === 'student@studymind.ai' ||
+    lower.endsWith('@example.com')
+  );
+}
+
+/**
  * Validates whether a student profile has all mandatory fields completed.
  * Required fields:
  * - name, email, age, education, course, subjects, learningGoal, learningLevel.
@@ -36,7 +49,7 @@ export interface UserAccount {
 export function isProfileDataComplete(profile: Partial<StudentProfile> | null | undefined): boolean {
   if (!profile) return false;
   if (!profile.name || !profile.name.trim()) return false;
-  if (!profile.email || !profile.email.trim()) return false;
+  if (!profile.email || !profile.email.trim() || isDummyEmail(profile.email)) return false;
   if (!profile.age || isNaN(Number(profile.age)) || Number(profile.age) <= 0) return false;
   if (!profile.education || !profile.education.trim()) return false;
   if (!profile.course || !profile.course.trim()) return false;
@@ -66,7 +79,7 @@ export function getMissingProfileFields(profile: Partial<StudentProfile> | null 
   if (!profile) return ['Full Profile Details'];
 
   if (!profile.name || !profile.name.trim()) missing.push('Full Name');
-  if (!profile.email || !profile.email.trim()) missing.push('Email');
+  if (!profile.email || !profile.email.trim() || isDummyEmail(profile.email)) missing.push('Email');
   if (!profile.age || isNaN(Number(profile.age)) || Number(profile.age) <= 0) missing.push('Age');
   if (!profile.education || !profile.education.trim()) missing.push('Education Level');
   if (!profile.course || !profile.course.trim()) missing.push('Course / Track');
